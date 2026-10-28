@@ -18,6 +18,8 @@ err()  { echo -e "${VERMELHO}[x]${RST} $1"; }
 DEST="$HOME/.mrrobot"
 BIN="$HOME/.local/bin"
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_URL="https://github.com/XenomorphSk/MRROBOT.git"
+REPO_DIR="$DEST/repo"
 
 echo -e "${VERMELHO}"
 echo "  instalando MR. ROBOT..."
@@ -53,15 +55,34 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 3. instala o agente em ~/.mrrobot
+# 3. instala o agente em ~/.mrrobot (clona do GitHub)
 # ---------------------------------------------------------------------------
 log "instalando o agente em $DEST"
 mkdir -p "$DEST" "$BIN"
-cp "$SRC_DIR/mr_robot.py" "$DEST/mr_robot.py"
-# guarda a pasta de origem como repo, se for um repo git (habilita auto-update via git)
-if [ -d "$SRC_DIR/.git" ]; then
-    echo "$SRC_DIR" > "$DEST/.repo_origem"
-    log "repo git detectado: auto-update via git habilitado"
+
+if ! command -v git >/dev/null 2>&1; then
+    sudo apt-get install -y -qq git || err "git nao instalado e sem rede"
+fi
+
+if [ -d "$REPO_DIR/.git" ]; then
+    log "repo ja existe, atualizando"
+    git -C "$REPO_DIR" pull --ff-only || warn "git pull falhou (sem rede?), usando o que ja tem"
+else
+    log "clonando $REPO_URL"
+    if git clone --depth 1 "$REPO_URL" "$REPO_DIR"; then
+        log "repo clonado"
+    else
+        warn "clone falhou (sem rede?). Tentando usar copia local"
+        [ -f "$SRC_DIR/mr_robot.py" ] && mkdir -p "$REPO_DIR" && cp "$SRC_DIR/mr_robot.py" "$REPO_DIR/"
+    fi
+fi
+
+# instala o script a partir do repo
+if [ -f "$REPO_DIR/mr_robot.py" ]; then
+    cp "$REPO_DIR/mr_robot.py" "$DEST/mr_robot.py"
+else
+    err "mr_robot.py nao encontrado. Verifique o repo ou a rede."
+    exit 1
 fi
 
 # ---------------------------------------------------------------------------
@@ -96,12 +117,14 @@ DEST="$HOME/.mrrobot"
 LOG="$DEST/update.log"
 echo "=== update $(date '+%Y-%m-%d %H:%M') ===" >> "$LOG"
 
-# 1. o proprio script, se veio de um repo git
-if [ -f "$DEST/.repo_origem" ]; then
-    REPO="$(cat "$DEST/.repo_origem")"
-    if [ -d "$REPO/.git" ]; then
-        git -C "$REPO" pull --ff-only >> "$LOG" 2>&1 && cp "$REPO/mr_robot.py" "$DEST/mr_robot.py"
+# 1. o proprio script, via git pull do repo oficial
+REPO_DIR="$DEST/repo"
+if [ -d "$REPO_DIR/.git" ]; then
+    if git -C "$REPO_DIR" pull --ff-only >> "$LOG" 2>&1; then
+        cp "$REPO_DIR/mr_robot.py" "$DEST/mr_robot.py"
         echo "script atualizado via git" >> "$LOG"
+    else
+        echo "git pull falhou (sem rede?)" >> "$LOG"
     fi
 fi
 
