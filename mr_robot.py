@@ -67,6 +67,13 @@ Regras do protocolo:
 - Trabalhe em passos pequenos: uma coisa de cada vez, verificando o resultado antes de seguir.
 - Sempre teste o que escrever, rodando. Nunca assuma que funcionou.
 - Se der erro, leia a observacao, conserte e tente de novo.
+- NUNCA repita um comando que ja rodou com sucesso. Cada passo deve avancar, nao repetir.
+- Em scans, use flags verbosas (ex: nmap -v) e LEIA a saida real na OBSERVACAO antes de
+  decidir o proximo passo. Nao invente resultado: se a saida nao mostra, voce nao sabe.
+- Para rodar comando de shell, SEMPRE use {"acao": "rodar_comando", "args": {"comando": "..."}}.
+  Nunca ponha o comando direto no campo "acao".
+- Ao criar arquivos, use SEMPRE caminhos relativos simples (ex: "index.html", "src/app.py").
+  Nunca use caminhos absolutos como /var/www/ ou /home/. Tudo e criado na pasta de trabalho atual.
 - Quando a tarefa estiver 100% feita E verificada, em vez de JSON responda em texto normal
   comecando com "CONCLUIDO:" seguido de um resumo curto do que foi feito e verificado.
 """
@@ -160,6 +167,16 @@ def _safe_path(caminho):
     return caminho if os.path.isabs(caminho) else os.path.abspath(os.path.join(WORKDIR, caminho))
 
 
+def _path_na_pasta(caminho):
+    """Resolve o caminho SEMPRE dentro do WORKDIR. Bloqueia escrita fora da pasta de trabalho."""
+    base = os.path.abspath(WORKDIR)
+    # caminho absoluto ou com .. e reancorado pelo basename dentro do workdir
+    alvo = os.path.abspath(os.path.join(base, caminho))
+    if os.path.commonpath([base, alvo]) != base:
+        alvo = os.path.join(base, os.path.basename(caminho.rstrip("/")) or "saida")
+    return alvo
+
+
 # --- portao de escopo: enforcement em codigo, nao no prompt ---------------
 _FILE_EXT = {"md", "py", "txt", "json", "sh", "log", "csv", "xml", "html",
              "js", "conf", "yaml", "yml", "cfg", "bin", "sha256", "c", "cpp", "go"}
@@ -200,16 +217,22 @@ def _fora_de_escopo(cmd):
 
 
 def tool_escrever_arquivo(caminho, conteudo):
-    p = _safe_path(caminho)
-    os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
-    with open(p, "w", encoding="utf-8") as f:
-        f.write(conteudo)
-    return f"OK: {len(conteudo)} bytes em {p}"
+    p = _path_na_pasta(caminho)   # sempre dentro do WORKDIR
+    try:
+        os.makedirs(os.path.dirname(p) or ".", exist_ok=True)
+        with open(p, "w", encoding="utf-8") as f:
+            f.write(conteudo)
+        aviso = ""
+        if os.path.basename(p) != os.path.basename(caminho.rstrip("/")):
+            aviso = " (caminho reancorado para dentro da pasta de trabalho)"
+        return f"OK: {len(conteudo)} bytes em {p}{aviso}"
+    except Exception as e:
+        return f"ERRO ao escrever em {p}: {e}. Use um caminho relativo dentro da pasta de trabalho."
 
 
 def tool_ler_arquivo(caminho):
     try:
-        with open(_safe_path(caminho), "r", encoding="utf-8", errors="replace") as f:
+        with open(_path_na_pasta(caminho), "r", encoding="utf-8", errors="replace") as f:
             return f.read()[:20000]
     except Exception as e:
         return f"ERRO ao ler: {e}"
@@ -318,10 +341,15 @@ def extrair_acao(texto):
 # ----------------------------------------------------------------------------
 def agente(tarefa, messages):
     messages.append({"role": "user", "content": tarefa})
+    historico_acoes = []
 
     for passo in range(MAX_STEPS):
-        with Spinner(f"raciocinando (passo {passo + 1})"):
-            msg = ollama_chat(messages)
+        try:
+            with Spinner(f"raciocinando (passo {passo + 1})"):
+                msg = ollama_chat(messages)
+        except KeyboardInterrupt:
+            print(f"\n{C['ylw']}interrompido. de volta ao prompt.{C['rst']}")
+            return
         conteudo = (msg.get("content") or "").strip()
         messages.append({"role": "assistant", "content": conteudo})
 
@@ -343,6 +371,30 @@ def agente(tarefa, messages):
 
         fn = acao["acao"]
         args = acao["args"]
+
+        # correcao: modelo as vezes poe o comando inteiro no campo 'acao'.
+        # se 'fn' nao e uma ferramenta conhecida mas parece um comando, redireciona.
+        if fn not in DISPATCH:
+            if " " in fn or "/" in fn:
+                args = {"comando": fn}
+                fn = "rodar_comando"
+            else:
+                messages.append({"role": "user", "content":
+                    f"A ferramenta '{fn}' nao existe. Use uma destas: {', '.join(DISPATCH)}. "
+                    f"Para rodar comando de shell, use rodar_comando com args.comando."})
+                continue
+
+        # detector de loop: mesma acao+args repetida trava o agente
+        assinatura = f"{fn}:{json.dumps(args, sort_keys=True)}"
+        historico_acoes.append(assinatura)
+        if historico_acoes.count(assinatura) >= 3:
+            print(f"{C['red']}  loop detectado: a mesma acao se repetiu. Parando.{C['rst']}")
+            messages.append({"role": "user", "content":
+                "Voce repetiu a mesma acao varias vezes sem progredir. PARE de repetir. "
+                "Leia a ultima OBSERVACAO com atencao, e ou faca algo diferente, ou "
+                "responda 'CONCLUIDO:' com o que ja descobriu."})
+            historico_acoes.clear()
+            continue
         alvo = args.get("caminho") or args.get("comando") or args.get("titulo") or ""
         print(f"{C['blu']}{ICONE.get(fn, '• ' + fn)}{C['rst']} {C['cyn']}{str(alvo)[:70]}{C['rst']}")
 
