@@ -342,6 +342,7 @@ def extrair_acao(texto):
 def agente(tarefa, messages):
     messages.append({"role": "user", "content": tarefa})
     historico_acoes = []
+    sem_acao = 0
 
     for passo in range(MAX_STEPS):
         try:
@@ -360,11 +361,19 @@ def agente(tarefa, messages):
 
         acao = extrair_acao(conteudo)
         if not acao:
-            # modelo falou sem emitir acao: reconduz ao protocolo
+            # modelo falou sem emitir acao
+            sem_acao += 1
+            if sem_acao >= 2:
+                # travou sem agir duas vezes: provavelmente ja terminou. Encerra mostrando o texto.
+                print(f"\n{C['grn']}{conteudo or '(tarefa finalizada)'}{C['rst']}")
+                print(f"{C['dim']}(encerrado: sem mais acoes){C['rst']}")
+                return
             print(f"{C['dim']}(resposta sem acao, reconduzindo){C['rst']}")
             messages.append({"role": "user", "content":
-                "Responda APENAS com um objeto JSON de acao, ou 'CONCLUIDO:' se terminou."})
+                "Se a tarefa acabou, responda comecando com 'CONCLUIDO:' e um resumo. "
+                "Se ainda falta algo, responda APENAS com um objeto JSON de acao."})
             continue
+        sem_acao = 0
 
         if acao["pensamento"]:
             print(f"{C['mag']}  ~ {acao['pensamento']}{C['rst']}")
